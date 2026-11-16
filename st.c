@@ -11,7 +11,9 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/sysctl.h>
 #include <sys/types.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -1129,37 +1131,56 @@ kscrolldown(const Arg *a)
 }
 
 void
-newterm(const Arg* a)
+newterm(const Arg *a)
 {
-	switch (fork()) {
-	case -1:
-		die("fork failed: %s\n", strerror(errno));
-		break;
-	case 0:
-		switch (fork()) {
-		case -1:
-			fprintf(stderr, "fork failed: %s\n", strerror(errno));
-			_exit(1);
-			break;
-		case 0:
-			chdir_by_pid(pid);
-			execl("/proc/self/exe", argv0, NULL);
-			_exit(1);
-			break;
-		default:
-			_exit(0);
-		}
-	default:
-		wait(NULL);
-	}
+        char path[PATH_MAX];
+        size_t len = sizeof(path);
+        int mib[4] = {
+                CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1
+        };
+
+        if (sysctl(mib, 4, path, &len, NULL, 0) < 0) {
+                perror("sysctl");
+                return;
+        }
+
+        switch (fork()) {
+        case -1:
+                die("fork failed: %s\n", strerror(errno));
+                break;
+        case 0:
+                switch (fork()) {
+                case -1:
+                        fprintf(stderr, "fork failed: %s\n", strerror(errno));
+                        _exit(1);
+                case 0:
+                        if (chdir_by_pid(pid) < 0)
+                                perror("chdir_by_pid");
+
+                        execl(path, argv0, (char *)NULL);
+                        perror("execl");
+                        _exit(1);
+                default:
+                        _exit(0);
+                }
+        default:
+                wait(NULL);
+        }
 }
 
 static int
 chdir_by_pid(pid_t pid)
 {
-	char buf[32];
-	snprintf(buf, sizeof buf, "/proc/%ld/cwd", (long)pid);
-	return chdir(buf);
+        struct kinfo_file kf;
+        int mib[4] = {
+                CTL_KERN, KERN_PROC, KERN_PROC_CWD, pid
+        };
+        size_t len = sizeof(kf);
+
+        if (sysctl(mib, 4, &kf, &len, NULL, 0) < 0)
+                return -1;
+
+        return chdir(kf.kf_path);
 }
 
 void
